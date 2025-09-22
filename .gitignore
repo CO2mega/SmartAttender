@@ -1,0 +1,10 @@
+# Ignore build output and IDE files
+/build/
+/app/build/
+/.gradle/
+/.idea/
+*.iml
+local.properties
+*.apk
+*.log
+
