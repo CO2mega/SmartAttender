@@ -37,6 +37,9 @@ android {
     }
     buildFeatures {
         compose = true
+        // Enable ML Model Binding to generate typed model bindings for tflite files
+        // Place your model files under src/main/ml/ for the binding to pick them up.
+        mlModelBinding = true
     }
     // If you're using view binding or data binding, ensure they are enabled here
     // viewBinding {
@@ -62,14 +65,19 @@ dependencies {
     implementation("com.google.android.material:material:1.9.0")
 
     // CameraX dependencies (from version catalog)
-    implementation(libs.androidx.camera.core)
-    implementation(libs.androidx.camera.camera2)
-    implementation(libs.androidx.camera.lifecycle)
-    implementation(libs.androidx.camera.view)
-    implementation(libs.androidx.camera.extensions)
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.0")
 
     // ML Kit Face Detection (from version catalog)
-    implementation(libs.mlkit.face.detection)
+    implementation("com.google.mlkit:face-detection:16.1.5")
+
+    // TensorFlow Lite for embeddings
+    implementation("org.tensorflow:tensorflow-lite:2.11.0")
+
+    // Optional: GPU delegate (uncomment if you add GPU delegate usage)
+    // implementation("org.tensorflow:tensorflow-lite-gpu:2.11.0")
 
     // Room dependencies (use kapt for annotation processing)
     implementation(libs.androidx.room.runtime)
@@ -92,4 +100,10 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+}
+
+kapt {
+    arguments {
+        arg("room.schemaLocation", "$projectDir/schemas")
+    }
 }

@@ -3,7 +3,8 @@ import androidx.room.*
 
 @Dao
 interface SignInDao {
-    @Query("SELECT * FROM sign_in_records WHERE faceId = :faceId AND nfcId = :nfcId LIMIT 1")
+    // Return the latest record (by timestamp) for the faceId+nfcId pair
+    @Query("SELECT * FROM sign_in_records WHERE faceId = :faceId AND nfcId = :nfcId ORDER BY timestamp DESC LIMIT 1")
     suspend fun getRecord(faceId: Long, nfcId: String): SignInRecord?
 
     @Query("SELECT * FROM sign_in_records")
@@ -18,4 +19,3 @@ interface SignInDao {
     @Delete
     suspend fun deleteRecord(record: SignInRecord)
 }
-
