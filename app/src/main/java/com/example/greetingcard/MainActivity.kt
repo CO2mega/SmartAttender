@@ -24,6 +24,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.core.content.ContextCompat
 import android.util.Log
 import androidx.biometric.BiometricPrompt
@@ -35,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import androidx.camera.lifecycle.ProcessCameraProvider
 import com.example.greetingcard.ui.composables.CameraPreview
 import com.example.greetingcard.ui.composables.FaceManagementScreen
+ import com.example.greetingcard.ui.composables.ExportScreen
 import com.example.greetingcard.ui.theme.GreetingCardTheme
 import com.example.greetingcard.viewmodel.MainViewModel
 import com.example.greetingcard.ml.FaceEmbedder
@@ -49,8 +51,6 @@ import android.graphics.BitmapFactory
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.lifecycle.lifecycleScope
-import android.os.Handler
-import android.os.Looper
 
 class MainActivity : AppCompatActivity() {
     private var nfcAdapter: NfcAdapter? = null
@@ -62,17 +62,6 @@ class MainActivity : AppCompatActivity() {
 
     // make ViewModel an activity property so onNewIntent can call onNfcScanResult
     private lateinit var mainViewModel: MainViewModel
-
-    // ReaderCallback for enableReaderMode
-    private val readerCallback = NfcAdapter.ReaderCallback { tag ->
-        try {
-            val idBytes = tag.id
-            val idHex = idBytes.joinToString(separator = "") { b -> "%02X".format(b) }
-            Handler(Looper.getMainLooper()).post {
-                try { mainViewModel.onNfcScanResult(idHex) } catch (e: Exception) { Log.e("MainActivity", "ReaderCallback delivery failed", e) }
-            }
-        } catch (_: Exception) {}
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -181,6 +170,28 @@ class MainActivity : AppCompatActivity() {
                 // Observe NFC queue for silent scans
                 val nfcQueue by mainViewModelInside.nfcQueue.collectAsState()
                 val lastNfc by mainViewModelInside.lastNfcScan.collectAsState()
+
+                // New: observe sign-in records and faces to show homepage prompt when CardScanActivity creates a record
+                val records by mainViewModelInside.records.collectAsState()
+                val faces by mainViewModelInside.faces.collectAsState()
+                // lastSeenRecordTs used only to deduplicate toast notifications
+                var lastSeenRecordTs by rememberSaveable { mutableStateOf<Long?>(null) }
+
+                LaunchedEffect(records) {
+                    if (records.isNotEmpty()) {
+                        val latest = records.maxByOrNull { it.timestamp }
+                        if (latest != null && latest.timestamp != lastSeenRecordTs) {
+                            lastSeenRecordTs = latest.timestamp
+                            val latestSignInFaceName = faces.firstOrNull { it.id == latest.faceId }?.name ?: "用户"
+                            // show a toast on home page to indicate clock-in time (no overlay)
+                            try {
+                                val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                                val formatted = try { sdf.format(java.util.Date(latest.timestamp)) } catch (_: Exception) { "" }
+                                android.widget.Toast.makeText(this@MainActivity, "打卡成功：${latestSignInFaceName} $formatted", android.widget.Toast.LENGTH_LONG).show()
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }
 
                 // If a card is scanned while on camera page and no face matched - start 30s window to allow face to be scanned
                 LaunchedEffect(lastNfc, selectedPage, matchedFace) {
@@ -293,13 +304,14 @@ class MainActivity : AppCompatActivity() {
                                     }
                                 )
 
-                                // Bottom card: show when matchedFace is non-null
+                                // Bottom card: show when matchedFace is non-null. Apply navigationBarsPadding so card sits above system nav bar.
                                 matchedFace?.let { mf ->
                                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
                                         Card(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .padding(12.dp),
+                                                .padding(12.dp)
+                                                .navigationBarsPadding(),
                                             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
                                             shape = RoundedCornerShape(12.dp)
                                         ) {
@@ -426,8 +438,7 @@ class MainActivity : AppCompatActivity() {
                                 FaceManagementScreen(viewModel = mainViewModelInside, modifier = Modifier.padding(innerPadding))
                             }
                             2 -> {
-                                // Export screen placeholder
-                                // ExportScreen(viewModel = mainViewModelInside, modifier = Modifier.padding(innerPadding))
+                                ExportScreen(viewModel = mainViewModelInside, modifier = Modifier.padding(innerPadding))
                             }
                         }
                     }
@@ -498,17 +509,31 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         try { mainViewModel.setCameraActive(true) } catch (_: Exception) {}
-        // Do not enable NFC reader mode on the main camera/home activity to avoid conflicts and unexpected ANRs.
-        // NFC is handled in CardScanActivity and AdminActivity which are single-purpose for tag handling.
+        // NOTE: Do NOT enable NFC reader mode or foreground dispatch on the home/main activity.
+        // NFC scans are handled in CardScanActivity (the dedicated scan UI). Keeping the home
+        // activity from registering NFC prevents accidental simultaneous readers and avoids
+        // confusing the UX where the home would react to cards.
+        try {
+            val adapter = nfcAdapter
+            if (adapter == null) {
+                Log.w("MainActivity", "Device does not support NFC or nfcAdapter is null")
+            } else if (!adapter.isEnabled) {
+                Log.w("MainActivity", "NFC adapter present but disabled")
+            } else {
+                // Intentionally skipping enableReaderMode/enableForegroundDispatch here.
+                Log.d("MainActivity", "Home activity NFC listening disabled (CardScanActivity handles scans)")
+            }
+        } catch (e: Exception) {
+            Log.w("MainActivity", "NFC setup check failed", e)
+        }
     }
 
     override fun onPause() {
         super.onPause()
         // Disable foreground dispatch to avoid leaks/duplicates
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                try { nfcAdapter?.disableReaderMode(this) } catch (_: Exception) {}
-            }
+            // Try to disable reader mode if it was enabled; safe to call on all supported SDKs
+            try { nfcAdapter?.disableReaderMode(this) } catch (_: Exception) {}
         } catch (_: Exception) {}
         try { nfcAdapter?.disableForegroundDispatch(this) } catch (_: Exception) {}
         // Cancel and clear PendingIntent so it won't be used when activity is background

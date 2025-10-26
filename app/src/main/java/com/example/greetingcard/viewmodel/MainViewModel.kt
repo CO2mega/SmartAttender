@@ -46,6 +46,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _records = MutableStateFlow<List<SignInRecord>>(emptyList())
     val records: StateFlow<List<SignInRecord>> = _records.asStateFlow()
 
+    // 新增：最近一次导出文件的信息，用于 UI 显示导出位置
+    private val _lastExportInfo = MutableStateFlow<String?>(null)
+    val lastExportInfo: StateFlow<String?> = _lastExportInfo.asStateFlow()
+
     init {
         // Load initial data
         viewModelScope.launch {
@@ -106,27 +110,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // Helper: get records for today (00:00..now)
+    suspend fun getRecordsForToday(): List<SignInRecord> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val all = signInDao.getAllRecords()
+                val cal = java.util.Calendar.getInstance()
+                val end = cal.timeInMillis
+                cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+                cal.set(java.util.Calendar.MINUTE, 0)
+                cal.set(java.util.Calendar.SECOND, 0)
+                cal.set(java.util.Calendar.MILLISECOND, 0)
+                val start = cal.timeInMillis
+                all.filter { it.timestamp in start..end }
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+    }
+
     // Export sign-in CSV. Made suspend to avoid blocking the main thread; performs DB + file IO on IO dispatcher.
-    suspend fun exportSignInCsv(context: Context): File? {
+    // If recordsToExport is provided, export only those records; otherwise export all records.
+    suspend fun exportSignInCsv(context: Context, recordsToExport: List<SignInRecord>? = null): File? {
         return try {
             // Get records on IO
-            val recordsList = withContext(Dispatchers.IO) { signInDao.getAllRecords() }
+            val recordsList = recordsToExport ?: withContext(Dispatchers.IO) { signInDao.getAllRecords() }
             val sb = StringBuilder()
             sb.append("faceId,nfcId,timestamp,isSigned\n")
             for (r in recordsList) {
-                sb.append("${'$'}{r.faceId},${'$'}{r.nfcId},${'$'}{r.timestamp},${'$'}{r.isSigned}\n")
+                sb.append("${r.faceId},${r.nfcId},${r.timestamp},${r.isSigned}\n")
             }
 
             val bytes = sb.toString().toByteArray()
             val appCtx = context.applicationContext
 
-            // For Android Q+ use MediaStore to place file into Downloads/SmartAttender (scoped storage compatible)
+            // use attender directory under Downloads as requested
+            val folderName = "attender"
+
+            // For Android Q+ use MediaStore to place file into Downloads/attender (scoped storage compatible)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                 val resolver = appCtx.contentResolver
-                val displayName = "sign_in_export.csv"
-                val relPath = Environment.DIRECTORY_DOWNLOADS + "/SmartAttender"
+                // include date/time in filename to avoid collisions
+                val dispName = if (recordsList.isNotEmpty()) {
+                    val sdfShort = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault())
+                    "sign_in_export_${sdfShort.format(java.util.Date())}.csv"
+                } else "sign_in_export.csv"
+                val relPath = Environment.DIRECTORY_DOWNLOADS + "/${folderName}"
                 val values = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, dispName)
                     put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/csv")
                     put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, relPath)
                     put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
@@ -141,9 +172,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     values.clear()
                     values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
                     try { resolver.update(uri, values, null, null) } catch (_: Exception) {}
-                    // Try to return a File object pointing to the absolute path if possible (not always available); otherwise return a File under app cache
+
+                    // Record a friendly export location for UI: prefer showing Downloads/attender/<name>
+                    try {
+                        _lastExportInfo.value = "Downloads/${folderName}/$dispName"
+                    } catch (_: Exception) {
+                        _lastExportInfo.value = uri.toString()
+                    }
+
+                    // Also return a cache copy so callers expecting a File still get a File reference
                     return try {
-                        val cacheFile = File(appCtx.cacheDir, "sign_in_export.csv")
+                        val cacheFile = File(appCtx.cacheDir, dispName)
                         withContext(Dispatchers.IO) { FileOutputStream(cacheFile).use { it.write(bytes) } }
                         cacheFile
                     } catch (_: Exception) {
@@ -156,10 +195,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             // Fallback for pre-Q or if MediaStore insert failed: attempt legacy public downloads directory
             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            val targetDir = File(downloadsDir, "SmartAttender")
+            val targetDir = File(downloadsDir, folderName)
             if (!targetDir.exists()) targetDir.mkdirs()
-            val outFile = File(targetDir, "sign_in_export.csv")
+            val outFileName = if (recordsList.isNotEmpty()) {
+                val sdfShort = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault())
+                "sign_in_export_${sdfShort.format(java.util.Date())}.csv"
+            } else "sign_in_export.csv"
+            val outFile = File(targetDir, outFileName)
             withContext(Dispatchers.IO) { FileOutputStream(outFile).use { it.write(bytes) } }
+
+            // set lastExportInfo to the actual path
+            try { _lastExportInfo.value = outFile.absolutePath } catch (_: Exception) { _lastExportInfo.value = null }
             outFile
         } catch (_: Exception) {
             null

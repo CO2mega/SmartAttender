@@ -358,7 +358,7 @@ fun CameraPreview(
                                     lastBoundingBox.set(null)
                                     // no faces: log more info occasionally
                                     if (CAMERA_PREVIEW_VERBOSE) {
-                                        if (frameCounter % 15 == 0) Log.d("CameraPreview", "No faces detected (frame=${'$'}frameCounter) - rotation=${'$'}rotation size=${'$'}{imageProxy.width}x${'$'}{imageProxy.height}")
+                                        if (frameCounter % 15 == 0) Log.d("CameraPreview", "No faces detected (frame=${frameCounter}) - rotation=${rotation} size=${imageProxy.width}x${imageProxy.height}")
                                     }
                                 }
                             }
